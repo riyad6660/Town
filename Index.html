@@ -44,17 +44,17 @@
             const ctx = canvas.getContext('2d');
 
             // ----- Game State -----
-            const GRID_SIZE = 20;           // 20x20 grid
+            const GRID_SIZE = 20;
             const TILE_WIDTH = 64;
             const TILE_HEIGHT = 32;
-            const grid = [];               // 2D array: each cell = { type: 0(empty) or 1(built), color: 'brown'|'blue'|'red'|'white' }
-            const NPCs = [];               // { x, y, name, questId? }
-            let player = { x: 10, y: 10 }; // grid position
+            const grid = [];
+            const NPCs = [];
+            let player = { x: 10, y: 10 };
             let mode = 'build';            // 'build' or 'explore'
             let resources = { wood: 20, stone: 10, gold: 5 };
-            let activeQuest = null;        // { description, reward, complete: ()=>bool }
-            let selectedColor = 'brown';   // current building color (like the palette)
-            let interactTarget = null;     // NPC or building reference for interaction
+            let activeQuest = null;        // { description, goal, reward, type }
+            let selectedColor = 'brown';
+            let interactTarget = null;
 
             // ----- Initialize Grid -----
             for (let y = 0; y < GRID_SIZE; y++) {
@@ -64,14 +64,31 @@
                 }
             }
 
+            // ----- Quest progress helper (fixes the save bug) -----
+            function getQuestProgress() {
+                if (!activeQuest) return 0;
+                if (activeQuest.type === 'build') {
+                    return grid.flat().filter(c => c.type === 1).length;
+                }
+                if (activeQuest.type === 'collect') {
+                    return resources.wood;
+                }
+                return 0;
+            }
+
             // ----- Save/Load with localStorage -----
             function saveGame() {
                 const data = {
                     grid: grid.map(row => row.map(cell => ({ type: cell.type, color: cell.color }))),
-                    npcs: NPCs,
+                    npcs: NPCs.map(n => ({ x: n.x, y: n.y, name: n.name, questGiven: n.questGiven || false })),
                     player,
                     resources,
-                    activeQuest
+                    activeQuest: activeQuest ? {
+                        description: activeQuest.description,
+                        goal: activeQuest.goal,
+                        reward: activeQuest.reward,
+                        type: activeQuest.type
+                    } : null
                 };
                 localStorage.setItem('riyadstown_save', JSON.stringify(data));
                 alert('Game saved!');
@@ -88,20 +105,19 @@
                         }
                     }
                     NPCs.length = 0;
-                    data.npcs.forEach(n => NPCs.push(n));
+                    data.npcs.forEach(n => NPCs.push({ x: n.x, y: n.y, name: n.name, questGiven: n.questGiven || false }));
                     player = data.player;
                     resources = data.resources;
-                    activeQuest = data.activeQuest;
+                    activeQuest = data.activeQuest || null;
                     updateUI();
-                } catch (e) { console.warn('Failed to load save'); }
+                } catch (e) { console.warn('Failed to load save', e); }
             }
 
-            // ----- Building Logic (Townscaper-like) -----
+            // ----- Building Logic -----
             function placeBuilding(gx, gy, color) {
                 if (gx < 0 || gx >= GRID_SIZE || gy < 0 || gy >= GRID_SIZE) return false;
-                if (grid[gy][gx].type !== 0) return false; // already built
+                if (grid[gy][gx].type !== 0) return false;
 
-                // cost
                 if (color === 'blue' || color === 'red') {
                     if (resources.wood < 2 || resources.stone < 1) { alert('Need 2 wood & 1 stone for colored house'); return false; }
                     resources.wood -= 2;
@@ -112,57 +128,48 @@
                 }
 
                 grid[gy][gx] = { type: 1, color: color };
-                // chance to spawn NPC if building near player or other buildings
                 trySpawnNPC(gx, gy);
                 updateUI();
                 return true;
             }
 
             function trySpawnNPC(gx, gy) {
-                // spawn human NPC after a few buildings
                 const builtCount = grid.flat().filter(c => c.type === 1).length;
                 if (builtCount >= 3 && NPCs.length < Math.floor(builtCount / 3) + 1) {
-                    // find empty adjacent cell
                     const dirs = [[0,1],[1,0],[0,-1],[-1,0]];
                     for (let [dx, dy] of dirs) {
                         const nx = gx + dx, ny = gy + dy;
                         if (nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE && grid[ny][nx].type === 0) {
                             const name = ['Ali', 'Layla', 'Omar', 'Fatima', 'Yusuf'][Math.floor(Math.random() * 5)];
-                            NPCs.push({ x: nx, y: ny, name, questId: Math.random() < 0.5 ? 'build' : 'collect' });
+                            NPCs.push({ x: nx, y: ny, name, questGiven: false });
                             break;
                         }
                     }
                 }
             }
 
-            // ----- Quest system -----
             function generateQuest(npc) {
-                if (npc.questId === 'build') {
-                    activeQuest = {
-                        description: `${npc.name}: "Build 3 more houses!"`,
-                        progress: () => grid.flat().filter(c => c.type === 1).length,
-                        goal: 3 + (grid.flat().filter(c => c.type === 1).length), // target 3 more than current
-                        reward: { gold: 10 },
-                        complete: false
-                    };
+                let type = npc.questId || 'build';
+                let description, goal, reward;
+                if (type === 'build') {
+                    const currentCount = grid.flat().filter(c => c.type === 1).length;
+                    goal = currentCount + 3;
+                    description = `${npc.name}: "Build 3 more houses!"`;
+                    reward = { gold: 10 };
                 } else {
-                    activeQuest = {
-                        description: `${npc.name}: "Bring me 5 wood!" (Collect from trees or chests)`,
-                        progress: () => resources.wood,
-                        goal: 5,
-                        reward: { gold: 15 },
-                        complete: false
-                    };
+                    goal = 5;
+                    description = `${npc.name}: "Bring me 5 wood!" (Collect from trees or chests)`;
+                    reward = { gold: 15 };
                 }
+                activeQuest = { description, goal, reward, type };
                 npc.questGiven = true;
                 updateUI();
             }
 
             function checkQuestCompletion() {
-                if (!activeQuest || activeQuest.complete) return;
-                const current = activeQuest.progress();
+                if (!activeQuest) return;
+                const current = getQuestProgress();
                 if (current >= activeQuest.goal) {
-                    activeQuest.complete = true;
                     resources.gold += activeQuest.reward.gold;
                     alert('Quest completed! Reward: ' + activeQuest.reward.gold + ' gold');
                     activeQuest = null;
@@ -170,23 +177,20 @@
                 }
             }
 
-            // ----- Player movement (explore mode) -----
+            // ----- Player movement -----
             function movePlayer(dx, dy) {
                 const nx = player.x + dx, ny = player.y + dy;
                 if (nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE) {
                     player.x = nx;
                     player.y = ny;
-                    // interaction detection
                     interactTarget = null;
                     hideInteractPanel();
-                    // check if adjacent to NPC?
                     checkInteractable();
                 }
             }
 
             function checkInteractable() {
                 if (mode !== 'explore') return;
-                // NPC nearby (within 1 tile)
                 for (let npc of NPCs) {
                     if (Math.abs(npc.x - player.x) <= 1 && Math.abs(npc.y - player.y) <= 1) {
                         interactTarget = npc;
@@ -194,7 +198,6 @@
                         return;
                     }
                 }
-                // check if standing on a building? (enter building not implemented, just talk)
                 hideInteractPanel();
             }
 
@@ -244,7 +247,7 @@
                 ctx.fillStyle = '#6B8E23';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-                // draw grid tiles (ground)
+                // ground tiles
                 for (let y = 0; y < GRID_SIZE; y++) {
                     for (let x = 0; x < GRID_SIZE; x++) {
                         const pos = toScreen(x, y);
@@ -259,7 +262,7 @@
                     }
                 }
 
-                // draw buildings
+                // buildings
                 for (let y = 0; y < GRID_SIZE; y++) {
                     for (let x = 0; x < GRID_SIZE; x++) {
                         if (grid[y][x].type === 1) {
@@ -271,9 +274,8 @@
                                 red: '#B22222',
                                 white: '#FFFAF0'
                             }[color] || '#8B4513';
-                            // simple house: wall + roof based on neighbors
                             const neighbors = countNeighbors(x, y);
-                            const h = 20 + neighbors * 5; // height variation
+                            const h = 20 + neighbors * 5;
                             // wall
                             ctx.fillStyle = '#D2B48C';
                             ctx.fillRect(pos.x - 12, pos.y - h - 10, 24, h + 10);
@@ -292,7 +294,7 @@
                     }
                 }
 
-                // draw NPCs
+                // NPCs
                 for (let npc of NPCs) {
                     const pos = toScreen(npc.x, npc.y);
                     ctx.fillStyle = '#000';
@@ -305,7 +307,7 @@
                     ctx.fill();
                 }
 
-                // draw player in explore mode
+                // player (explore mode)
                 if (mode === 'explore') {
                     const pos = toScreen(player.x, player.y);
                     ctx.fillStyle = '#FFF';
@@ -318,7 +320,7 @@
                     ctx.fill();
                 }
 
-                // color palette buttons on canvas (bottom)
+                // color palette
                 drawPalette();
             }
 
@@ -357,7 +359,7 @@
                 const mx = (e.clientX - rect.left) * scaleX;
                 const my = (e.clientY - rect.top) * scaleY;
 
-                // palette detection
+                // palette click
                 const paletteY = canvas.height - 50;
                 if (my > paletteY && my < paletteY + 30) {
                     const idx = Math.floor((mx - 30) / 50);
@@ -378,11 +380,11 @@
                         checkQuestCompletion();
                         draw();
                     } else if (mode === 'explore') {
-                        // move player towards tile if adjacent? For simplicity, move one step towards click
                         const dx = Math.sign(tile.gx - player.x);
                         const dy = Math.sign(tile.gy - player.y);
                         movePlayer(dx, dy);
                         updateUI();
+                        checkQuestCompletion();
                         draw();
                     }
                 }
@@ -390,7 +392,6 @@
 
             function screenToGrid(sx, sy) {
                 const ox = canvas.width / 2, oy = canvas.height / 4;
-                // reverse isometric
                 const relX = sx - ox, relY = sy - oy;
                 const gx = (relX / (TILE_WIDTH/2) + relY / (TILE_HEIGHT/2)) / 2;
                 const gy = (relY / (TILE_HEIGHT/2) - relX / (TILE_WIDTH/2)) / 2;
@@ -399,7 +400,7 @@
                 return null;
             }
 
-            // ----- Mode Switches -----
+            // ----- Mode & Save buttons -----
             document.getElementById('buildModeBtn').addEventListener('click', () => {
                 mode = 'build';
                 hideInteractPanel();
@@ -439,7 +440,7 @@
                 handleCanvasClick(touch);
             }, {passive: false});
 
-            // keyboard for testing
+            // keyboard movement (for testing on desktop)
             window.addEventListener('keydown', (e) => {
                 if (mode === 'explore') {
                     if (e.key === 'ArrowUp') movePlayer(0, -1);
@@ -452,7 +453,7 @@
                 }
             });
 
-            // initial load
+            // Initial setup
             loadGame();
             resizeCanvas();
             updateUI();
